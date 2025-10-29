@@ -34,8 +34,17 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
 
-      - name: Install Helm
-        uses: azure/setup-helm@v4
+      - - name: Install Helm (robust with retries)
+  run: |
+    set -e
+    for i in {1..5}; do
+      echo "Attempt $i to install Helm..."
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && break
+      echo "Helm install failed; retrying in 10s..."
+      sleep 10
+    done
+    helm version
+
 
       # Start LocalStack in background
       - name: Start LocalStack
