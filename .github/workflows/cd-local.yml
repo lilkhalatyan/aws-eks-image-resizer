@@ -1,4 +1,6 @@
-﻿name: cd-local
+﻿name= .github/workflows/cd-local.yml
+```yaml
+name: cd-local
 
 on:
   workflow_dispatch:
@@ -29,20 +31,46 @@ jobs:
       - name: Login to GHCR
         run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build & push API
+      - name: Build API image
         run: |
           set -euxo pipefail
           docker build -t "$API_IMG" api
-          docker push "$API_IMG"
 
-      - name: Build & push Worker
+      - name: Build Worker image
         run: |
           set -euxo pipefail
           docker build -t "$WORKER_IMG" worker
+
+      - name: Push images to GHCR (optional for remote pull)
+        run: |
+          set -euxo pipefail
+          # push but we will also load into kind for local cluster usage
+          docker push "$API_IMG"
           docker push "$WORKER_IMG"
 
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
+        with:
+          # ensure a named cluster so later kind load works predictably
+          name: kind
+
+      - name: Create GHCR imagePullSecret in cluster (so pods can pull if needed)
+        run: |
+          set -euxo pipefail
+          kubectl create secret docker-registry ghcr-registry-creds \
+            --docker-server=ghcr.io \
+            --docker-username="${{ github.actor }}" \
+            --docker-password="${{ github.token }}" \
+            --docker-email=github-actions@github.com || true
+          # make default serviceaccount use the secret (so pods can pull images)
+          kubectl patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-registry-creds"}]}' || true
+
+      - name: Load images into kind (faster and avoids imagePull issues)
+        run: |
+          set -euxo pipefail
+          # ensure the images built above are available to the kind cluster
+          kind load docker-image "$API_IMG" --name kind
+          kind load docker-image "$WORKER_IMG" --name kind
 
       - name: Install tools (jq, nc, curl, unzip, apt helpers)
         run: |
@@ -71,110 +99,5 @@ jobs:
         run: |
           set -euxo pipefail
           for i in {1..5}; do
-            curl -fsSL https://baltocdn.com/helm/signing.asc | sudo gpg --dearmor -o /usr/share/keyrings/helm.gpg && \
-            echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" \
-              | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list && break || sleep 5
-          done
-          for i in {1..5}; do
-            sudo apt-get update && sudo apt-get install -y helm && break || (echo "retrying helm install"; sleep 10)
-          done
-          helm version
-
-      - name: Deploy chart with images
-        run: |
-          set -euxo pipefail
-          helm upgrade --install image-resizer deploy/charts/image-resizer \
-            --namespace default --create-namespace \
-            --set image.api="${API_IMG}" \
-            --set image.worker="${WORKER_IMG}" \
-            --set env.AWS_DEFAULT_REGION="${AWS_REGION}" \
-            --set env.INPUT_BUCKET="${INPUT_BUCKET}" \
-            --set env.OUTPUT_BUCKET="${OUTPUT_BUCKET}" \
-            --set awsEndpoint=http://localstack:4566
-          kubectl wait --for=condition=available --timeout=300s deploy/localstack
-
-      - name: Bootstrap Local AWS + patch ConfigMap
-        run: |
-          set -euxo pipefail
-          # --- Fake credentials so AWS CLI is happy ---
-          mkdir -p ~/.aws
-          cat > ~/.aws/credentials <<'EOF'
-          [default]
-          aws_access_key_id = test
-          aws_secret_access_key = test
-          EOF
-          cat > ~/.aws/config <<'EOF'
-          [default]
-          region = us-west-2
-          output = json
-          EOF
-          export AWS_ACCESS_KEY_ID=test
-          export AWS_SECRET_ACCESS_KEY=test
-          export AWS_DEFAULT_REGION=us-west-2
-          # -------------------------------------------
-
-          kubectl port-forward svc/localstack 4566:4566 >/tmp/ls-pf.log 2>&1 &
-          PF_LS=$!
-          for i in {1..60}; do nc -z localhost 4566 && break || sleep 1; done
-
-          export AWS_ENDPOINT_URL=http://localhost:4566
-          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${INPUT_BUCKET}" || true
-          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${OUTPUT_BUCKET}" || true
-          aws --endpoint-url "$AWS_ENDPOINT_URL" sqs create-queue --queue-name image-resizer-jobs >/dev/null 2>&1 || true
-
-          QURL=$(aws --endpoint-url "$AWS_ENDPOINT_URL" sqs get-queue-url \
-            --queue-name image-resizer-jobs --query 'QueueUrl' --output text)
-          echo "QUEUE_URL=$QURL"
-          echo "QUEUE_URL=$QURL" >> $GITHUB_ENV
-
-          kubectl patch configmap image-resizer-config -p "{\"data\":{\"QUEUE_URL\":\"$QURL\"}}"
-          kubectl rollout restart deploy/api
-          kubectl rollout restart deploy/worker
-
-          kill $PF_LS || true
-
-      - name: Wait for API and Worker
-        run: |
-          set -euxo pipefail
-          kubectl wait --for=condition=available --timeout=300s deploy/api
-          kubectl wait --for=condition=available --timeout=300s deploy/worker
-          kubectl get pods -o wide
-
-      - name: Smoke test (upload & verify)
-        run: |
-          set -euxo pipefail
-          python - <<'PY'
-          from PIL import Image
-          im = Image.new("RGB", (1024, 768), (200, 120, 40))
-          im.save("sample.jpg", "JPEG", quality=85)
-          print("wrote sample.jpg")
-          PY
-
-          kubectl port-forward deploy/api 8080:8080 >/tmp/api-pf.log 2>&1 &
-          PF_API=$!
-          for i in {1..60}; do nc -z localhost 8080 && break || sleep 1; done
-
-          curl -s -F "file=@sample.jpg" http://localhost:8080/upload | tee /tmp/upload.json
-          JOB=$(jq -r .job_id /tmp/upload.json || echo "")
-          echo "JOB=$JOB"
-
-          kubectl port-forward svc/localstack 4566:4566 >/tmp/ls2-pf.log 2>&1 &
-          PF2=$!
-          for i in {1..60}; do nc -z localhost 4566 && break || sleep 1; done
-
-          export AWS_ENDPOINT_URL=http://localhost:4566
-          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 ls "s3://${OUTPUT_BUCKET}/output/" || true
-          if [ -n "$JOB" ]; then
-            aws --endpoint-url "$AWS_ENDPOINT_URL" s3 cp "s3://${OUTPUT_BUCKET}/output/${JOB}.jpg" resized.jpg || true
-          fi
-
-          kill $PF_API || true
-          kill $PF2 || true
-
-      - name: Upload resized image artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: resized-image
-          path: resized.jpg
-          if-no-files-found: ignore
+            curl -fsSL https://baltocdn.com/helm/sign
+
