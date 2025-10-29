@@ -44,13 +44,28 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
 
-      - name: Install tools (jq, nc, curl, awscli, apt helpers)
+      # Install base tools (exclude awscli here)
+      - name: Install tools (jq, nc, curl, unzip, apt helpers)
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y jq netcat-openbsd curl apt-transport-https ca-certificates gnupg awscli
+          for i in {1..5}; do
+            sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock || true
+            sudo apt-get update && sudo apt-get install -y \
+              jq netcat-openbsd curl unzip apt-transport-https ca-certificates gnupg && break
+            echo "APT install failed, retrying in 10s..."
+            sleep 10
+          done
 
-      # ⬇️ NO azure/setup-helm here — install via APT + retries
+      # Install AWS CLI v2 from official bundle
+      - name: Install AWS CLI v2
+        run: |
+          set -euxo pipefail
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          aws --version
+
+      # Install Helm via APT with retries (no azure/setup-helm)
       - name: Install Helm via APT (with retries)
         run: |
           set -euxo pipefail
@@ -76,13 +91,11 @@ jobs:
             --set env.OUTPUT_BUCKET="${OUTPUT_BUCKET}" \
             --set awsEndpoint=http://localstack:4566
 
-          # Wait for LocalStack to be Ready (deployed by chart)
           kubectl wait --for=condition=available --timeout=300s deploy/localstack
 
       - name: Bootstrap Local AWS + patch ConfigMap
         run: |
           set -euxo pipefail
-          # Port-forward LocalStack service so awscli can talk to it from the runner
           kubectl port-forward svc/localstack 4566:4566 >/tmp/ls-pf.log 2>&1 &
           PF_LS=$!
           for i in {1..60}; do nc -z localhost 4566 && break || sleep 1; done
@@ -146,4 +159,3 @@ jobs:
           name: resized-image
           path: resized.jpg
           if-no-files-found: ignore
-
