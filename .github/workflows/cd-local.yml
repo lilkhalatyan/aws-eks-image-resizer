@@ -1,40 +1,61 @@
-﻿- name: Bootstrap Local AWS + patch ConfigMap
-  run: |
-    set -euxo pipefail
-    # --- Fake credentials so AWS CLI is happy ---
-    mkdir -p ~/.aws
-    cat > ~/.aws/credentials <<EOF
-    [default]
-    aws_access_key_id = test
-    aws_secret_access_key = test
-    EOF
-    cat > ~/.aws/config <<EOF
-    [default]
-    region = us-west-2
-    output = json
-    EOF
-    export AWS_ACCESS_KEY_ID=test
-    export AWS_SECRET_ACCESS_KEY=test
-    export AWS_DEFAULT_REGION=us-west-2
-    # -------------------------------------------
+﻿jobs:
+  build_push_validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REG_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+      API_IMG: ghcr.io/${{ github.repository_owner }}/image-resizer-api:${{ github.sha }}
+      WORKER_IMG: ghcr.io/${{ github.repository_owner }}/image-resizer-worker:${{ github.sha }}
+      AWS_REGION: us-west-2
+      INPUT_BUCKET: image-resizer-input
+      OUTPUT_BUCKET: image-resizer-output
+      DEBIAN_FRONTEND: noninteractive
 
-    # Port-forward LocalStack so AWS CLI can talk to it
-    kubectl port-forward svc/localstack 4566:4566 >/tmp/ls-pf.log 2>&1 &
-    PF_LS=$!
-    for i in {1..60}; do nc -z localhost 4566 && break || sleep 1; done
+    steps:
+      # ... your earlier steps ...
 
-    export AWS_ENDPOINT_URL=http://localhost:4566
-    aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${INPUT_BUCKET}" || true
-    aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${OUTPUT_BUCKET}" || true
-    aws --endpoint-url "$AWS_ENDPOINT_URL" sqs create-queue --queue-name image-resizer-jobs >/dev/null 2>&1 || true
+      - name: Bootstrap Local AWS + patch ConfigMap
+        run: |
+          set -euxo pipefail
+          # --- Fake credentials so AWS CLI is happy ---
+          mkdir -p ~/.aws
+          cat > ~/.aws/credentials <<'EOF'
+          [default]
+          aws_access_key_id = test
+          aws_secret_access_key = test
+          EOF
+          cat > ~/.aws/config <<'EOF'
+          [default]
+          region = us-west-2
+          output = json
+          EOF
+          export AWS_ACCESS_KEY_ID=test
+          export AWS_SECRET_ACCESS_KEY=test
+          export AWS_DEFAULT_REGION=us-west-2
+          # -------------------------------------------
 
-    QURL=$(aws --endpoint-url "$AWS_ENDPOINT_URL" sqs get-queue-url \
-      --queue-name image-resizer-jobs --query 'QueueUrl' --output text)
-    echo "QUEUE_URL=$QURL"
-    echo "QUEUE_URL=$QURL" >> $GITHUB_ENV
+          # Port-forward LocalStack so AWS CLI can talk to it
+          kubectl port-forward svc/localstack 4566:4566 >/tmp/ls-pf.log 2>&1 &
+          PF_LS=$!
+          for i in {1..60}; do nc -z localhost 4566 && break || sleep 1; done
 
-    kubectl patch configmap image-resizer-config -p "{\"data\":{\"QUEUE_URL\":\"$QURL\"}}"
-    kubectl rollout restart deploy/api
-    kubectl rollout restart deploy/worker
+          export AWS_ENDPOINT_URL=http://localhost:4566
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${INPUT_BUCKET}" || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${OUTPUT_BUCKET}" || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" sqs create-queue --queue-name image-resizer-jobs >/dev/null 2>&1 || true
 
-    kill $PF_LS || true
+          QURL=$(aws --endpoint-url "$AWS_ENDPOINT_URL" sqs get-queue-url \
+            --queue-name image-resizer-jobs --query 'QueueUrl' --output text)
+          echo "QUEUE_URL=$QURL"
+          echo "QUEUE_URL=$QURL" >> $GITHUB_ENV
+
+          kubectl patch configmap image-resizer-config -p "{\"data\":{\"QUEUE_URL\":\"$QURL\"}}"
+          kubectl rollout restart deploy/api
+          kubectl rollout restart deploy/worker
+
+          kill $PF_LS || true
+
+      # ... the remaining steps ...
