@@ -1,0 +1,15 @@
+image:
+  api: ghcr.io/owner/image-resizer-api:latest
+  worker: ghcr.io/owner/image-resizer-worker:latest
+
+env:
+  AWS_DEFAULT_REGION: us-west-2
+  INPUT_BUCKET: image-resizer-input
+  OUTPUT_BUCKET: image-resizer-output
+
+# LocalStack endpoint the app should talk to (in-cluster service DNS)
+awsEndpoint: http://localstack:4566
+
+# API service port
+api:
+  port: 8080

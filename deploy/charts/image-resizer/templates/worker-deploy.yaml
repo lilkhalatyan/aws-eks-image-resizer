@@ -1,30 +1,29 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-name: worker
-labels:
-{{- include "image-resizer.labels" . | nindent 4 }}
+  name: worker
 spec:
-replicas: {{ .Values.worker.replicas }}
-selector:
-matchLabels: { app: worker }
-template:
-metadata:
-labels: { app: worker }
-spec:
-containers:
-- name: worker
-image: {{ .Values.image.worker | quote }}
-env:
-- name: AWS_DEFAULT_REGION
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_DEFAULT_REGION } }
-- name: INPUT_BUCKET
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: INPUT_BUCKET } }
-- name: OUTPUT_BUCKET
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: OUTPUT_BUCKET } }
-- name: RESIZE
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: RESIZE } }
-- name: AWS_ENDPOINT_URL
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_ENDPOINT_URL } }
-- name: QUEUE_URL
-valueFrom: { configMapKeyRef: { name: image-resizer-config, key: QUEUE_URL } }
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.worker }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AWS_DEFAULT_REGION
+              valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_DEFAULT_REGION } }
+            - name: INPUT_BUCKET
+              valueFrom: { configMapKeyRef: { name: image-resizer-config, key: INPUT_BUCKET } }
+            - name: OUTPUT_BUCKET
+              valueFrom: { configMapKeyRef: { name: image-resizer-config, key: OUTPUT_BUCKET } }
+            - name: AWS_ENDPOINT
+              valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_ENDPOINT } }
+            - name: QUEUE_URL
+              valueFrom: { configMapKeyRef: { name: image-resizer-config, key: QUEUE_URL } }
