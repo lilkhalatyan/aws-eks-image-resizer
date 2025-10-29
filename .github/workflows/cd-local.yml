@@ -1,4 +1,5 @@
 name: cd-local
+
 on:
   workflow_dispatch:
   push:
@@ -7,18 +8,26 @@ on:
 jobs:
   build_push_validate:
     runs-on: ubuntu-latest
+    # Needed to push to GHCR
     permissions:
       contents: read
       packages: write
+
     env:
+      REG_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
       API_IMG: ghcr.io/${{ github.repository_owner }}/image-resizer-api:${{ github.sha }}
       WORKER_IMG: ghcr.io/${{ github.repository_owner }}/image-resizer-worker:${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v4
+      AWS_REGION: us-west-2
+      INPUT_BUCKET: image-resizer-input
+      OUTPUT_BUCKET: image-resizer-output
 
-      # Build & push to GHCR (free for public repos)
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Login to GHCR
-        run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build & push API
         run: |
@@ -30,65 +39,94 @@ jobs:
           docker build -t "$WORKER_IMG" worker
           docker push "$WORKER_IMG"
 
-      # Create a kind cluster
+      # Create a kind cluster (Kubernetes in Docker)
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
 
-     - name: Install tools (jq, nc, curl)
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y jq netcat-openbsd curl
-
-- name: Install Helm (robust with retries)
-  run: |
-    set -e
-    for i in {1..5}; do
-      echo "Attempt $i to install Helm..."
-      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && break
-      echo "Helm install failed; retrying in 10s..."
-      sleep 10
-    done
-    helm version
-
-      # Start LocalStack in background
-      - name: Start LocalStack
+      # Utilities we rely on later
+      - name: Install tools (jq, nc, curl, awscli, apt helpers)
         run: |
-          docker run -d --name localstack -p 4566:4566 \
-            -e SERVICES=s3,sqs -e AWS_DEFAULT_REGION=us-west-2 \
-            localstack/localstack:3
-          # Wait for edge to be ready
-          for i in {1..30}; do
-            if curl -s localhost:4566/_localstack/health | jq -e '.services.s3=="running"' >/dev/null 2>&1; then
-              echo "LocalStack ready"; break; fi; sleep 2; done
+          sudo apt-get update
+          sudo apt-get install -y jq netcat-openbsd curl apt-transport-https ca-certificates gnupg awscli
 
-      # Create S3 + SQS in LocalStack
-      - name: Bootstrap Local AWS
+      # Robust Helm install via APT with retries, plus fallback script
+      - name: Install Helm (APT with retries)
         run: |
-          pipx install awscli
-          export AWS_ENDPOINT_URL=http://localhost:4566
-          aws --endpoint-url $AWS_ENDPOINT_URL s3 mb s3://image-resizer-input || true
-          aws --endpoint-url $AWS_ENDPOINT_URL s3 mb s3://image-resizer-output || true
-          aws --endpoint-url $AWS_ENDPOINT_URL sqs create-queue --queue-name image-resizer-jobs || true
-          QURL=$(aws --endpoint-url $AWS_ENDPOINT_URL sqs get-queue-url --queue-name image-resizer-jobs --query 'QueueUrl' --output text)
-          echo "QUEUE_URL=$QURL" >> $GITHUB_ENV
+          set -e
+          for i in {1..5}; do
+            echo "Attempt $i to add Helm APT repo..."
+            curl -fsSL https://baltocdn.com/helm/signing.asc | sudo gpg --dearmor -o /usr/share/keyrings/helm.gpg && \
+            echo "deb [signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" \
+              | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list && break || sleep 5
+          done
+          for i in {1..5}; do
+            echo "Attempt $i to install Helm from APT..."
+            sudo apt-get update && sudo apt-get install -y helm && break || (echo "retrying in 10s"; sleep 10)
+          done
+          helm version
 
-      # Deploy Helm with images + LocalStack endpoint
-      - name: Deploy chart
+      - name: Install Helm (fallback script)
+        if: ${{ failure() }}
+        run: |
+          set -e
+          for i in {1..5}; do
+            echo "Attempt $i to install Helm via script..."
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && break || (echo "retry in 10s"; sleep 10)
+          done
+          helm version
+
+      # Deploy the whole stack (LocalStack + ConfigMap + API + Worker) via Helm
+      - name: Deploy chart with images
         run: |
           helm upgrade --install image-resizer deploy/charts/image-resizer \
             --namespace default --create-namespace \
-            --set image.api="$API_IMG" \
-            --set image.worker="$WORKER_IMG" \
-            --set env.AWS_DEFAULT_REGION=us-west-2 \
-            --set env.INPUT_BUCKET=image-resizer-input \
-            --set env.OUTPUT_BUCKET=image-resizer-output \
-            --set awsEndpoint=http://localstack.default.svc.cluster.local:4566
-          kubectl wait --for=condition=available --timeout=180s deploy/api
-          kubectl wait --for=condition=available --timeout=180s deploy/worker
+            --set image.api="${API_IMG}" \
+            --set image.worker="${WORKER_IMG}" \
+            --set env.AWS_DEFAULT_REGION="${AWS_REGION}" \
+            --set env.INPUT_BUCKET="${INPUT_BUCKET}" \
+            --set env.OUTPUT_BUCKET="${OUTPUT_BUCKET}" \
+            --set awsEndpoint=http://localstack:4566
 
-      # Port-forward API and run a real request inside the runner
+          # Wait for LocalStack pod to become Ready (it runs inside the cluster)
+          kubectl wait --for=condition=available --timeout=240s deploy/localstack
+
+      # Create buckets + queue inside IN-CLUSTER LocalStack (via port-forward)
+      - name: Bootstrap Local AWS (buckets + queue) and patch ConfigMap
+        run: |
+          set -e
+          # 1) Port-forward LocalStack so awscli in the runner can hit it
+          kubectl port-forward svc/localstack 4566:4566 >/tmp/ls-pf.log 2>&1 &
+          PF_LS=$!
+          for i in {1..30}; do nc -z localhost 4566 && break || sleep 1; done
+
+          export AWS_ENDPOINT_URL=http://localhost:4566
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${INPUT_BUCKET}" || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb "s3://${OUTPUT_BUCKET}" || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" sqs create-queue --queue-name image-resizer-jobs >/dev/null 2>&1 || true
+          QURL=$(aws --endpoint-url "$AWS_ENDPOINT_URL" sqs get-queue-url --queue-name image-resizer-jobs --query 'QueueUrl' --output text)
+          echo "QUEUE_URL=$QURL"
+          echo "QUEUE_URL=$QURL" >> $GITHUB_ENV
+
+          # 2) Patch the existing ConfigMap to add QUEUE_URL
+          kubectl patch configmap image-resizer-config -p "{\"data\":{\"QUEUE_URL\":\"$QURL\"}}"
+
+          # 3) Restart API + Worker to pick up the QUEUE_URL
+          kubectl rollout restart deploy/api
+          kubectl rollout restart deploy/worker
+
+          # 4) Clean up port-forward
+          kill $PF_LS || true
+
+      - name: Wait for API and Worker
+        run: |
+          kubectl wait --for=condition=available --timeout=240s deploy/api
+          kubectl wait --for=condition=available --timeout=240s deploy/worker
+          kubectl get pods -o wide
+
+      # End-to-end smoke test: generate image, upload via API, verify output in S3, download artifact
       - name: Smoke test (upload & verify)
         run: |
+          set -e
           # 1) Generate a sample image
           python - <<'PY'
           from PIL import Image
@@ -97,10 +135,9 @@ jobs:
           print("wrote sample.jpg")
           PY
 
-          # 2) Background port-forward
-          kubectl port-forward deploy/api 8080:8080 >/tmp/pf.log 2>&1 &
-          PF_PID=$!
-          # Wait for port-forward to come up
+          # 2) Port-forward API
+          kubectl port-forward deploy/api 8080:8080 >/tmp/api-pf.log 2>&1 &
+          PF_API=$!
           for i in {1..30}; do nc -z localhost 8080 && break || sleep 1; done
 
           # 3) Upload the image
@@ -108,15 +145,21 @@ jobs:
           JOB=$(jq -r .job_id /tmp/upload.json)
           echo "JOB=$JOB"
 
-          # 4) Give worker a few seconds to process
-          sleep 8
+          # 4) Wait for worker to process
+          sleep 10
 
-          # 5) Verify output object in LocalStack S3 and download it as artifact
+          # 5) Verify and copy the resized file from LocalStack S3 (in-cluster via svc port-forward again)
+          kubectl port-forward svc/localstack 4566:4566 >/tmp/ls2-pf.log 2>&1 &
+          PF2=$!
+          for i in {1..30}; do nc -z localhost 4566 && break || sleep 1; done
+
           export AWS_ENDPOINT_URL=http://localhost:4566
-          aws --endpoint-url $AWS_ENDPOINT_URL s3 ls s3://image-resizer-output/output/
-          aws --endpoint-url $AWS_ENDPOINT_URL s3 cp s3://image-resizer-output/output/$JOB.jpg resized.jpg || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 ls "s3://${OUTPUT_BUCKET}/output/" || true
+          aws --endpoint-url "$AWS_ENDPOINT_URL" s3 cp "s3://${OUTPUT_BUCKET}/output/${JOB}.jpg" resized.jpg || true
 
-          kill $PF_PID || true
+          # 6) Cleanup
+          kill $PF_API || true
+          kill $PF2 || true
 
       - name: Upload resized image artifact
         if: always()
