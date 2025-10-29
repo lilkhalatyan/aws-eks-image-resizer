@@ -44,7 +44,6 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
 
-      # Install base tools (exclude awscli here)
       - name: Install tools (jq, nc, curl, unzip, apt helpers)
         run: |
           set -euxo pipefail
@@ -56,23 +55,18 @@ jobs:
             sleep 10
           done
 
-      # Install AWS CLI v2 from official bundle
       - name: Install / Ensure AWS CLI v2
-  run: |
-    set -euxo pipefail
-    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip -q -o awscliv2.zip
-    if command -v aws >/dev/null 2>&1; then
-      # Runner already has AWS CLI → update in place
-      sudo ./aws/install --update
-    else
-      # Fresh install
-      sudo ./aws/install
-    fi
-    aws --version
+        run: |
+          set -euxo pipefail
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q -o awscliv2.zip
+          if command -v aws >/dev/null 2>&1; then
+            sudo ./aws/install --update
+          else
+            sudo ./aws/install
+          fi
+          aws --version
 
-
-      # Install Helm via APT with retries (no azure/setup-helm)
       - name: Install Helm via APT (with retries)
         run: |
           set -euxo pipefail
@@ -97,7 +91,6 @@ jobs:
             --set env.INPUT_BUCKET="${INPUT_BUCKET}" \
             --set env.OUTPUT_BUCKET="${OUTPUT_BUCKET}" \
             --set awsEndpoint=http://localstack:4566
-
           kubectl wait --for=condition=available --timeout=300s deploy/localstack
 
       - name: Bootstrap Local AWS + patch ConfigMap
@@ -118,7 +111,6 @@ jobs:
           kubectl patch configmap image-resizer-config -p "{\"data\":{\"QUEUE_URL\":\"$QURL\"}}"
           kubectl rollout restart deploy/api
           kubectl rollout restart deploy/worker
-
           kill $PF_LS || true
 
       - name: Wait for API and Worker
