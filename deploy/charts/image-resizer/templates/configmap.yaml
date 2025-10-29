@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+name: image-resizer-config
+labels:
+{{- include "image-resizer.labels" . | nindent 4 }}
+data:
+AWS_DEFAULT_REGION: {{ .Values.env.AWS_DEFAULT_REGION | quote }}
+INPUT_BUCKET: {{ .Values.env.INPUT_BUCKET | quote }}
+OUTPUT_BUCKET: {{ .Values.env.OUTPUT_BUCKET | quote }}
+RESIZE: {{ .Values.env.RESIZE | quote }}
+AWS_ENDPOINT_URL: {{ .Values.awsEndpoint | quote }}

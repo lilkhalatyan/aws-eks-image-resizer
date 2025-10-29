@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+name: localstack
+labels:
+{{- include "image-resizer.labels" . | nindent 4 }}
+spec:
+replicas: 1
+selector:
+matchLabels: { app: localstack }
+template:
+metadata:
+labels: { app: localstack }
+spec:
+containers:
+- name: localstack
+image: localstack/localstack:3
+env:
+- name: SERVICES
+value: s3,sqs,ecr
+- name: AWS_DEFAULT_REGION
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_DEFAULT_REGION } }
+- name: DEBUG
+value: "0"
+ports:
+- containerPort: 4566

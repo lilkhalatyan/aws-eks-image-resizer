@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+name: api
+labels:
+{{- include "image-resizer.labels" . | nindent 4 }}
+spec:
+replicas: {{ .Values.api.replicas }}
+selector:
+matchLabels: { app: api }
+template:
+metadata:
+labels: { app: api }
+spec:
+containers:
+- name: api
+image: {{ .Values.image.api | quote }}
+ports:
+- containerPort: {{ .Values.api.port }}
+env:
+- name: AWS_DEFAULT_REGION
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_DEFAULT_REGION } }
+- name: INPUT_BUCKET
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: INPUT_BUCKET } }
+- name: OUTPUT_BUCKET
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: OUTPUT_BUCKET } }
+- name: RESIZE
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: RESIZE } }
+- name: AWS_ENDPOINT_URL
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: AWS_ENDPOINT_URL } }
+- name: QUEUE_URL
+valueFrom: { configMapKeyRef: { name: image-resizer-config, key: QUEUE_URL } }
