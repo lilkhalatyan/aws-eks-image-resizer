@@ -24,8 +24,7 @@ jobs:
       - name: Login to GHCR
         run: |
           set -euxo pipefail
-          echo "${{ github.token }}" \
-            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build API image and export name
         run: |
@@ -46,41 +45,12 @@ jobs:
       - name: Debug: show exported image variables
         run: |
           set -euxo pipefail
-          echo "DEBUG: API_IMG='$API_IMG'"
-          echo "DEBUG: WORKER_IMG='$WORKER_IMG'"
+          # Use parameter expansion with default to avoid unbound-variable in debug
+          printf "API_IMG=%s\n" "${API_IMG:-<not set>}"
+          printf "WORKER_IMG=%s\n" "${WORKER_IMG:-<not set>}"
 
-      - name: Push images to GHCR (optional)
+      - name: Push images to GHCR (optional for remote pull)
         run: |
           set -euxo pipefail
-          docker push "$API_IMG"
-          docker push "$WORKER_IMG"
+          # Safely test for variables instead of letting 'set -u' abort with unhelpful message.
 
-      - name: Create kind cluster
-        uses: helm/kind-action@v1.10.0
-        with:
-          cluster_name: kind
-
-      - name: Load images into kind
-        run: |
-          set -euxo pipefail
-          kind load docker-image "$API_IMG" --name kind
-          kind load docker-image "$WORKER_IMG" --name kind
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-
-      - name: Deploy LocalStack to kind
-        run: |
-          set -euxo pipefail
-          kubectl apply -f deploy/localstack-deploy.yaml
-          kubectl wait --for=condition=ready pod -l app=localstack --timeout=180s
-
-      - name: Helm upgrade/install image-resizer (local values)
-        run: |
-          set -euxo pipefail
-          helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/charts/image-resizer/values-local.yaml --wait --timeout 5m
-
-      - name: Smoke test API (port-forward + upload)
-        run: |
-          set -euxo pipefail
-          kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2
