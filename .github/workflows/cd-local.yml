@@ -1,5 +1,4 @@
-﻿---
-name: cd-local
+﻿name: cd-local
 
 on:
   workflow_dispatch: {}
@@ -45,12 +44,70 @@ jobs:
       - name: Debug: show exported image variables
         run: |
           set -euxo pipefail
-          # Use parameter expansion with default to avoid unbound-variable in debug
           printf "API_IMG=%s\n" "${API_IMG:-<not set>}"
           printf "WORKER_IMG=%s\n" "${WORKER_IMG:-<not set>}"
 
       - name: Push images to GHCR (optional for remote pull)
         run: |
           set -euxo pipefail
-          # Safely test for variables instead of letting 'set -u' abort with unhelpful message.
+          if [ -z "${API_IMG:-}" ]; then
+            echo "API_IMG not set — skipping push to GHCR"
+          else
+            echo "Pushing $API_IMG"
+            docker push "$API_IMG"
+          fi
+          if [ -z "${WORKER_IMG:-}" ]; then
+            echo "WORKER_IMG not set — skipping push to GHCR"
+          else
+            echo "Pushing $WORKER_IMG"
+            docker push "$WORKER_IMG"
+          fi
 
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: kind
+
+      - name: Load images into kind
+        run: |
+          set -euxo pipefail
+          if [ -n "${API_IMG:-}" ]; then
+            kind load docker-image "$API_IMG" --name kind
+          else
+            echo "No API_IMG set, skipping kind load for API"
+          fi
+          if [ -n "${WORKER_IMG:-}" ]; then
+            kind load docker-image "$WORKER_IMG" --name kind
+          else
+            echo "No WORKER_IMG set, skipping kind load for WORKER"
+          fi
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy LocalStack to kind
+        run: |
+          set -euxo pipefail
+          kubectl apply -f deploy/localstack-deploy.yaml
+          kubectl wait --for=condition=ready pod -l app=localstack --timeout=180s
+
+      - name: Helm upgrade/install image-resizer (local values)
+        run: |
+          set -euxo pipefail
+          helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/charts/image-resizer/values-local.yaml --wait --timeout 5m
+
+      - name: Smoke test API (port-forward + upload)
+        run: |
+          set -euxo pipefail
+          kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2>&1 &
+          sleep 4
+          if [ ! -f test.jpg ]; then
+            head -c 1024 /dev/urandom > test.jpg || echo "dummy" > test.jpg
+          fi
+          curl -s -F "file=@./test.jpg" http://127.0.0.1:8080/upload | jq || true
+
+      - name: Show pods and logs (debug)
+        run: |
+          kubectl get pods -o wide
+          kubectl logs -l app=api --tail=100 || true
+          kubectl logs -l app=worker --tail=100 || true
