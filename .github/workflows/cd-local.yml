@@ -13,95 +13,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      REG_OWNER: ${{ github.repository_owner }}
-      SHA: ${{ github.sha }}
-      AWS_REGION: us-west-2
-      INPUT_BUCKET: image-resizer-input
-      OUTPUT_BUCKET: image-resizer-output
-      DEBIAN_FRONTEND: noninteractive
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Login to GHCR
-        run: |
-          set -euxo pipefail
-          echo "${{ github.token }}" \
-            | docker login ghcr.io -u "${{ github.actor }}" \
-            --password-stdin
-
-      - name: Build API image
-        run: |
-          set -euxo pipefail
-          API_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-api"
-          API_IMG="${API_NAME}:${{ github.sha }}"
-          docker build -t "$API_IMG" api
-          echo "API_IMG=$API_IMG" >> $GITHUB_ENV
-
-      - name: Build Worker image
-        run: |
-          set -euxo pipefail
-          WORKER_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-worker"
-          WORKER_IMG="${WORKER_NAME}:${{ github.sha }}"
-          docker build -t "$WORKER_IMG" worker
-          echo "WORKER_IMG=$WORKER_IMG" >> $GITHUB_ENV
-
-      - name: Push images to GHCR (optional for remote pull)
-        run: |
-          set -euxo pipefail
-          docker push "$API_IMG"
-          docker push "$WORKER_IMG"
-
-      - name: Create kind cluster
-        uses: helm/kind-action@v1.10.0
-        with:
-          name: kind
-
-      - name: Create GHCR imagePullSecret in cluster (so pods can pull)
-        run: |
-          set -euxo pipefail
-          kubectl create secret docker-registry ghcr-registry-creds \
-            --docker-server=ghcr.io \
-            --docker-username="${{ github.actor }}" \
-            --docker-password="${{ github.token }}" \
-            --docker-email=github-actions@github.com || true
-          kubectl patch serviceaccount default \
-            -p '{"imagePullSecrets":[{"name":"ghcr-registry-creds"}]}' || true
-
-      - name: Load images into kind (faster and avoids imagePull issues)
-        run: |
-          set -euxo pipefail
-          kind load docker-image "$API_IMG" --name kind
-          kind load docker-image "$WORKER_IMG" --name kind
-
-      - name: Install tools (jq, nc, curl, unzip, apt helpers)
-        run: |
-          set -euxo pipefail
-          for i in {1..5}; do
-            sudo rm -f /var/lib/dpkg/lock-frontend \
-              /var/lib/apt/lists/lock || true
-            sudo apt-get update && sudo apt-get install -y \
-              jq netcat-openbsd curl unzip apt-transport-https \
-              ca-certificates gnupg && break
-            echo "APT install failed, retrying in 10s..."
-            sleep 10
-          done
-
-      - name: Install / Ensure AWS CLI v2
-        run: |
-          set -euxo pipefail
-          curl -fsSL \
-            "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
-            -o "awscliv2.zip"
-          unzip -q -o awscliv2.zip
-          if command -v aws >/dev/null 2>&1; then
-            sudo ./aws/install --update
-          else
-            sudo ./aws/install
-          fi
-          aws --version
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
+      - name: Example step
+        run: echo "workflow triggers OK"
