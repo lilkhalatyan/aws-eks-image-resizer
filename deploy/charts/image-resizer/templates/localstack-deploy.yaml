@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: localstack
+  labels:
+    app: localstack
 spec:
   replicas: 1
   selector:
@@ -14,18 +16,24 @@ spec:
     spec:
       containers:
         - name: localstack
-          image: localstack/localstack:3
+          image: localstack/localstack:2.2.0
           env:
             - name: SERVICES
               value: "s3,sqs"
-            - name: AWS_DEFAULT_REGION
-              value: "{{ .Values.env.AWS_DEFAULT_REGION }}"
+            - name: DEBUG
+              value: "1"
+            - name: DEFAULT_REGION
+              value: "us-west-2"
+            - name: DATA_DIR
+              value: "/tmp/localstack/data"
           ports:
             - containerPort: 4566
-          readinessProbe:
-            httpGet: { path: /_localstack/health, port: 4566 }
-            initialDelaySeconds: 5
-            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 4566
+            initialDelaySeconds: 10
+            periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
@@ -35,7 +43,5 @@ spec:
   selector:
     app: localstack
   ports:
-    - name: edge
-      port: 4566
+    - port: 4566
       targetPort: 4566
-  type: ClusterIP

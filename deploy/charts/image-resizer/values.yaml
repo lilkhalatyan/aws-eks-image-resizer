@@ -1,15 +1,17 @@
 image:
-  api: ghcr.io/owner/image-resizer-api:latest
-  worker: ghcr.io/owner/image-resizer-worker:latest
+  api: image-resizer-api:local
+  worker: image-resizer-worker:local
 
 env:
-  AWS_DEFAULT_REGION: us-west-2
   INPUT_BUCKET: image-resizer-input
   OUTPUT_BUCKET: image-resizer-output
+  # inside kind LocalStack will be reachable at http://localstack:4566
+  QUEUE_URL: http://localstack:4566/000000000000/image-resizer-jobs
+  RESIZE: "512"
 
-# LocalStack endpoint the app should talk to (in-cluster service DNS)
-awsEndpoint: http://localstack:4566
-
-# API service port
 api:
-  port: 8080
+  replicas: 1
+  containerPort: 8080
+
+ingress:
+  enabled: false

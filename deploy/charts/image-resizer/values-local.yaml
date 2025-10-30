@@ -1,0 +1,17 @@
+image:
+  api: image-resizer-api:local
+  worker: image-resizer-worker:local
+
+env:
+  INPUT_BUCKET: image-resizer-input
+  OUTPUT_BUCKET: image-resizer-output
+  # inside kind LocalStack will be reachable at http://localstack:4566
+  QUEUE_URL: http://localstack:4566/000000000000/image-resizer-jobs
+  RESIZE: "512"
+
+api:
+  replicas: 1
+  containerPort: 8080
+
+ingress:
+  enabled: false

@@ -8,7 +8,7 @@ on:
       - main
 
 jobs:
-  build_push_validate:
+  build_and_deploy_local:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -18,5 +18,69 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Example step
-        run: echo "workflow triggers OK"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GHCR
+        run: |
+          set -euxo pipefail
+          echo "${{ github.token }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build API image
+        run: |
+          set -euxo pipefail
+          API_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-api"
+          API_IMG="${API_NAME}:${{ github.sha }}"
+          docker build -t "$API_IMG" api
+          echo "API_IMG=$API_IMG" >> $GITHUB_ENV
+
+      - name: Build Worker image
+        run: |
+          set -euxo pipefail
+          WORKER_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-worker"
+          WORKER_IMG="${WORKER_NAME}:${{ github.sha }}"
+          docker build -t "$WORKER_IMG" worker
+          echo "WORKER_IMG=$WORKER_IMG" >> $GITHUB_ENV
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          name: kind
+
+      - name: Load images into kind
+        run: |
+          set -euxo pipefail
+          kind load docker-image "$API_IMG" --name kind
+          kind load docker-image "$WORKER_IMG" --name kind
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy LocalStack to kind
+        run: |
+          set -euxo pipefail
+          kubectl apply -f deploy/localstack-deploy.yaml
+          kubectl wait --for=condition=ready pod -l app=localstack --timeout=180s
+
+      - name: Helm upgrade/install image-resizer (local values)
+        run: |
+          set -euxo pipefail
+          helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/local-values.yaml --wait --timeout 5m
+
+      - name: Smoke test API (port-forward + upload)
+        run: |
+          set -euxo pipefail
+          kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2>&1 &
+          sleep 4
+          # use a tiny dummy file included in repo (create test.jpg if not present)
+          if [ ! -f test.jpg ]; then
+            head -c 1024 /dev/urandom > test.jpg || echo "dummy" > test.jpg
+          fi
+          curl -s -F "file=@./test.jpg" http://127.0.0.1:8080/upload | jq || true
+
+      - name: Show pods and logs (debug)
+        run: |
+          kubectl get pods -o wide
+          kubectl logs -l app=api --tail=100 || true
+          kubectl logs -l app=worker --tail=100 || true
