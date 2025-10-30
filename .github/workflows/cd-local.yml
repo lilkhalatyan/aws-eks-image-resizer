@@ -1,7 +1,7 @@
 ﻿name: cd-local
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -12,7 +12,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -25,7 +24,7 @@ jobs:
           set -euxo pipefail
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build API image and export name
+      - name: Build API image
         env:
           API_NAME: "ghcr.io/${{ github.repository_owner }}/image-resizer-api"
         run: |
@@ -34,7 +33,7 @@ jobs:
           docker build -t "$API_IMG" api
           echo "API_IMG=$API_IMG" >> $GITHUB_ENV
 
-      - name: Build Worker image and export name
+      - name: Build Worker image
         env:
           WORKER_NAME: "ghcr.io/${{ github.repository_owner }}/image-resizer-worker"
         run: |
@@ -43,25 +42,17 @@ jobs:
           docker build -t "$WORKER_IMG" worker
           echo "WORKER_IMG=$WORKER_IMG" >> $GITHUB_ENV
 
-      - name: Debug: show exported image variables
+      - name: Debug images
         run: |
           set -euxo pipefail
-          printf 'API_IMG=%s\n' "${API_IMG:-not_set}"
-          printf 'WORKER_IMG=%s\n' "${WORKER_IMG:-not_set}"
+          echo "API_IMG=${API_IMG:-not_set}"
+          echo "WORKER_IMG=${WORKER_IMG:-not_set}"
 
-      - name: Push images to GHCR (optional)
+      - name: Push images (optional)
         run: |
           set -euxo pipefail
-          if [ -z "${API_IMG:-}" ]; then
-            echo "API_IMG not set - skipping push"
-          else
-            docker push "$API_IMG"
-          fi
-          if [ -z "${WORKER_IMG:-}" ]; then
-            echo "WORKER_IMG not set - skipping push"
-          else
-            docker push "$WORKER_IMG"
-          fi
+          if [ -n "${API_IMG:-}" ]; then docker push "$API_IMG"; else echo "skip API push"; fi
+          if [ -n "${WORKER_IMG:-}" ]; then docker push "$WORKER_IMG"; else echo "skip WORKER push"; fi
 
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
@@ -71,38 +62,32 @@ jobs:
       - name: Load images into kind
         run: |
           set -euxo pipefail
-          if [ -n "${API_IMG:-}" ]; then
-            kind load docker-image "$API_IMG" --name kind
-          fi
-          if [ -n "${WORKER_IMG:-}" ]; then
-            kind load docker-image "$WORKER_IMG" --name kind
-          fi
+          if [ -n "${API_IMG:-}" ]; then kind load docker-image "$API_IMG" --name kind; fi
+          if [ -n "${WORKER_IMG:-}" ]; then kind load docker-image "$WORKER_IMG" --name kind; fi
 
       - name: Install Helm
         uses: azure/setup-helm@v4
 
-      - name: Deploy LocalStack to kind
+      - name: Deploy LocalStack
         run: |
           set -euxo pipefail
           kubectl apply -f deploy/localstack-deploy.yaml
           kubectl wait --for=condition=ready pod -l app=localstack --timeout=180s
 
-      - name: Helm upgrade/install image-resizer (local values)
+      - name: Helm install app
         run: |
           set -euxo pipefail
           helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/charts/image-resizer/values-local.yaml --wait --timeout 5m
 
-      - name: Smoke test API (port-forward + upload)
+      - name: Smoke test API
         run: |
           set -euxo pipefail
           kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2>&1 &
           sleep 4
-          if [ ! -f test.jpg ]; then
-            head -c 1024 /dev/urandom > test.jpg || echo "dummy" > test.jpg
-          fi
-          curl -s -F "file=@./test.jpg" http://127.0.0.1:8080/upload | jq || true
+          if [ ! -f test.jpg ]; then head -c 1024 /dev/urandom > test.jpg; fi
+          curl -s -F "file=@./test.jpg" http://127.0.0.1:8080/upload || true
 
-      - name: Show pods and logs (debug)
+      - name: Show pods and logs
         run: |
           kubectl get pods -o wide
           kubectl logs -l app=api --tail=100 || true
