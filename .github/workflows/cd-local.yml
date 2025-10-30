@@ -44,20 +44,20 @@ jobs:
       - name: Debug: show exported image variables
         run: |
           set -euxo pipefail
-          printf "API_IMG=%s\n" "${API_IMG:-<not set>}"
-          printf "WORKER_IMG=%s\n" "${WORKER_IMG:-<not set>}"
+          printf 'API_IMG=%s\n' "${API_IMG:-not_set}"
+          printf 'WORKER_IMG=%s\n' "${WORKER_IMG:-not_set}"
 
       - name: Push images to GHCR (optional for remote pull)
         run: |
           set -euxo pipefail
           if [ -z "${API_IMG:-}" ]; then
-            echo "API_IMG not set — skipping push to GHCR"
+            echo "API_IMG not set - skipping push to GHCR"
           else
             echo "Pushing $API_IMG"
             docker push "$API_IMG"
           fi
           if [ -z "${WORKER_IMG:-}" ]; then
-            echo "WORKER_IMG not set — skipping push to GHCR"
+            echo "WORKER_IMG not set - skipping push to GHCR"
           else
             echo "Pushing $WORKER_IMG"
             docker push "$WORKER_IMG"
