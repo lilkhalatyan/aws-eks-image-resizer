@@ -1,7 +1,7 @@
 name: cd-local
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
     branches:
       - main
@@ -45,14 +45,30 @@ jobs:
       - name: Debug images
         run: |
           set -euxo pipefail
+          # Initialize to avoid 'unbound variable' with set -u
+          API_IMG="${API_IMG:-}"
+          WORKER_IMG="${WORKER_IMG:-}"
           echo "API_IMG=${API_IMG:-not_set}"
           echo "WORKER_IMG=${WORKER_IMG:-not_set}"
 
       - name: Push images (optional)
         run: |
           set -euxo pipefail
-          if [ -n "${API_IMG:-}" ]; then docker push "$API_IMG"; else echo "skip API push"; fi
-          if [ -n "${WORKER_IMG:-}" ]; then docker push "$WORKER_IMG"; else echo "skip WORKER push"; fi
+          # initialize variables so parameter expansion below never triggers 'unbound variable'
+          API_IMG="${API_IMG:-}"
+          WORKER_IMG="${WORKER_IMG:-}"
+          if [ -n "${API_IMG}" ]; then
+            echo "Pushing $API_IMG"
+            docker push "$API_IMG"
+          else
+            echo "API_IMG not set - skipping push"
+          fi
+          if [ -n "${WORKER_IMG}" ]; then
+            echo "Pushing $WORKER_IMG"
+            docker push "$WORKER_IMG"
+          else
+            echo "WORKER_IMG not set - skipping push"
+          fi
 
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
@@ -62,8 +78,10 @@ jobs:
       - name: Load images into kind
         run: |
           set -euxo pipefail
-          if [ -n "${API_IMG:-}" ]; then kind load docker-image "$API_IMG" --name kind; fi
-          if [ -n "${WORKER_IMG:-}" ]; then kind load docker-image "$WORKER_IMG" --name kind; fi
+          API_IMG="${API_IMG:-}"
+          WORKER_IMG="${WORKER_IMG:-}"
+          if [ -n "${API_IMG}" ]; then kind load docker-image "$API_IMG" --name kind; else echo "No API_IMG - skip load"; fi
+          if [ -n "${WORKER_IMG}" ]; then kind load docker-image "$WORKER_IMG" --name kind; else echo "No WORKER_IMG - skip load"; fi
 
       - name: Install Helm
         uses: azure/setup-helm@v4
