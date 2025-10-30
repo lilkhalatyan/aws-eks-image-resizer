@@ -1,0 +1,35 @@
+﻿name: diagnose-actions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          echo "Runner: $RUNNER_OS / $RUNNER_TEMP"
+          uname -a || true
+          env | sort | grep -E "GITHUB|API_IMG|WORKER_IMG" || true
+
+      - name: Show first 32 bytes of workflow file (diagnose BOM)
+        run: |
+          od -An -t u1 -N 32 .github/workflows/cd-local.yml || true
+
+      - name: Print GITHUB_ENV content (if any)
+        run: |
+          if [ -f "$GITHUB_ENV" ]; then
+            echo "=== GITHUB_ENV content ==="
+            cat "$GITHUB_ENV" || true
+            echo "=== end GITHUB_ENV ==="
+          else
+            echo "GITHUB_ENV file not present yet"
+          fi
+
+      - name: Success marker
+        run: |
+          echo "diagnose-actions completed"
