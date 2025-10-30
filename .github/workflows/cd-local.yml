@@ -35,11 +35,9 @@ jobs:
       - name: Build API image
         run: |
           set -euxo pipefail
-          # compute image name and build
           API_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-api"
           API_IMG="${API_NAME}:${{ github.sha }}"
           docker build -t "$API_IMG" api
-          # export for later steps
           echo "API_IMG=$API_IMG" >> $GITHUB_ENV
 
       - name: Build Worker image
@@ -53,7 +51,6 @@ jobs:
       - name: Push images to GHCR (optional for remote pull)
         run: |
           set -euxo pipefail
-          # API_IMG and WORKER_IMG are set by previous steps via $GITHUB_ENV
           docker push "$API_IMG"
           docker push "$WORKER_IMG"
 
