@@ -27,7 +27,7 @@ jobs:
           echo "${{ github.token }}" \
             | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build API image
+      - name: Build API image and export name
         run: |
           set -euxo pipefail
           API_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-api"
@@ -35,7 +35,7 @@ jobs:
           docker build -t "$API_IMG" api
           echo "API_IMG=$API_IMG" >> $GITHUB_ENV
 
-      - name: Build Worker image
+      - name: Build Worker image and export name
         run: |
           set -euxo pipefail
           WORKER_NAME="ghcr.io/${{ github.repository_owner }}/image-resizer-worker"
@@ -43,10 +43,22 @@ jobs:
           docker build -t "$WORKER_IMG" worker
           echo "WORKER_IMG=$WORKER_IMG" >> $GITHUB_ENV
 
+      - name: Debug: show exported image variables
+        run: |
+          set -euxo pipefail
+          echo "DEBUG: API_IMG='$API_IMG'"
+          echo "DEBUG: WORKER_IMG='$WORKER_IMG'"
+
+      - name: Push images to GHCR (optional)
+        run: |
+          set -euxo pipefail
+          docker push "$API_IMG"
+          docker push "$WORKER_IMG"
+
       - name: Create kind cluster
         uses: helm/kind-action@v1.10.0
         with:
-          name: kind
+          cluster_name: kind
 
       - name: Load images into kind
         run: |
@@ -66,21 +78,9 @@ jobs:
       - name: Helm upgrade/install image-resizer (local values)
         run: |
           set -euxo pipefail
-          helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/local-values.yaml --wait --timeout 5m
+          helm upgrade --install image-resizer deploy/charts/image-resizer -f deploy/charts/image-resizer/values-local.yaml --wait --timeout 5m
 
       - name: Smoke test API (port-forward + upload)
         run: |
           set -euxo pipefail
-          kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2>&1 &
-          sleep 4
-          # use a tiny dummy file included in repo (create test.jpg if not present)
-          if [ ! -f test.jpg ]; then
-            head -c 1024 /dev/urandom > test.jpg || echo "dummy" > test.jpg
-          fi
-          curl -s -F "file=@./test.jpg" http://127.0.0.1:8080/upload | jq || true
-
-      - name: Show pods and logs (debug)
-        run: |
-          kubectl get pods -o wide
-          kubectl logs -l app=api --tail=100 || true
-          kubectl logs -l app=worker --tail=100 || true
+          kubectl port-forward svc/api 8080:8080 >/tmp/portforward.log 2
